@@ -45,6 +45,7 @@ import com.android.internal.util.XmlUtils;
 import com.android.server.pm.PackageManagerService.DumpState;
 
 import java.util.Collection;
+import java.util.HashSet;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -63,6 +64,7 @@ import android.content.pm.Signature;
 import android.content.pm.UserInfo;
 import android.content.pm.PackageUserState;
 import android.content.pm.VerifierDeviceIdentity;
+import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
@@ -71,9 +73,13 @@ import android.util.SparseArray;
 import android.util.Xml;
 
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
@@ -169,12 +175,15 @@ final class Settings {
     private final File mPackageListFilename;
     private final File mStoppedPackagesFilename;
     private final File mBackupStoppedPackagesFilename;
+    private final File mPrebundledPackagesFilename;
 
     final ArrayMap<String, PackageSetting> mPackages =
             new ArrayMap<String, PackageSetting>();
     // List of replaced system applications
     private final ArrayMap<String, PackageSetting> mDisabledSysPackages =
         new ArrayMap<String, PackageSetting>();
+    private final HashSet<String> mPrebundledPackages =
+            new HashSet<String>();
 
     private static int mFirstAvailableUid = 0;
 
@@ -274,6 +283,7 @@ final class Settings {
         mSettingsFilename = new File(mSystemDir, "packages.xml");
         mBackupSettingsFilename = new File(mSystemDir, "packages-backup.xml");
         mPackageListFilename = new File(mSystemDir, "packages.list");
+        mPrebundledPackagesFilename = new File(mSystemDir, "prebundled-packages.list");
         FileUtils.setPermissions(mPackageListFilename, 0640, SYSTEM_UID, PACKAGE_INFO_GID);
 
         // Deprecated: Needed for migration
@@ -1775,6 +1785,57 @@ final class Settings {
         //Debug.stopMethodTracing();
     }
 
+    void writePrebundledPackagesLPr() {
+        PrintWriter writer = null;
+        try {
+            writer = new PrintWriter(
+                    new BufferedWriter(new FileWriter(mPrebundledPackagesFilename, false)));
+            for (String packageName : mPrebundledPackages) {
+                writer.println(packageName);
+            }
+        } catch (IOException e) {
+            Slog.e(PackageManagerService.TAG, "Unable to write prebundled package list", e);
+        } finally {
+            if (writer != null) {
+                writer.close();
+            }
+        }
+    }
+
+    void readPrebundledPackagesLPr() {
+        if (!mPrebundledPackagesFilename.exists()) {
+            return;
+        }
+
+        BufferedReader reader = null;
+        try {
+            reader = new BufferedReader(new FileReader(mPrebundledPackagesFilename));
+            String packageName = reader.readLine();
+            while (packageName != null) {
+                if (!TextUtils.isEmpty(packageName)) {
+                    mPrebundledPackages.add(packageName);
+                }
+                packageName = reader.readLine();
+            }
+        } catch (IOException e) {
+            Slog.e(PackageManagerService.TAG, "Unable to read prebundled package list", e);
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (IOException e) {}
+            }
+        }
+    }
+
+    void markPrebundledPackageInstalledLPr(String packageName) {
+        mPrebundledPackages.add(packageName);
+    }
+
+    boolean wasPrebundledPackageInstalledLPr(String packageName) {
+        return mPrebundledPackages.contains(packageName);
+    }
+
     void writeDisabledSysPackageLPr(XmlSerializer serializer, final PackageSetting pkg)
             throws java.io.IOException {
         serializer.startTag(null, "updated-package");
@@ -1961,6 +2022,9 @@ final class Settings {
                         serializer.attribute(null, "label", pi.nonLocalizedLabel.toString());
                     }
                 }
+            }
+            if (bp.allowViaWhitelist) {
+                serializer.attribute(null, "allowViaWhitelist", Integer.toString(1));
             }
             serializer.endTag(null, TAG_ITEM);
         }
@@ -2579,6 +2643,8 @@ final class Settings {
                     bp.protectionLevel = readInt(parser, null, "protection",
                             PermissionInfo.PROTECTION_NORMAL);
                     bp.protectionLevel = PermissionInfo.fixProtectionLevel(bp.protectionLevel);
+                    bp.allowViaWhitelist = readInt(parser, null,
+                            "allowViaWhitelist", 0) == 1;
                     if (dynamic) {
                         PermissionInfo pi = new PermissionInfo();
                         pi.packageName = sourcePackage.intern();
@@ -2586,6 +2652,7 @@ final class Settings {
                         pi.icon = readInt(parser, null, "icon", 0);
                         pi.nonLocalizedLabel = parser.getAttributeValue(null, "label");
                         pi.protectionLevel = bp.protectionLevel;
+                        pi.allowViaWhitelist = bp.allowViaWhitelist;
                         bp.pendingInfo = pi;
                     }
                     out.put(bp.name, bp);

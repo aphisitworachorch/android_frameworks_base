@@ -26,6 +26,7 @@ import android.app.KeyguardManager;
 import android.app.ProgressDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.IBluetoothManager;
+import android.content.pm.ThemeUtils;
 import android.media.AudioAttributes;
 import android.nfc.NfcAdapter;
 import android.nfc.INfcAdapter;
@@ -126,7 +127,6 @@ public final class ShutdownThread extends Thread {
     private static AlertDialog sConfirmDialog;
 
     private static AudioManager mAudioManager;
-    
     private ShutdownThread() {
     }
  
@@ -198,12 +198,13 @@ public final class ShutdownThread extends Thread {
         if (confirm) {
             final CloseDialogReceiver closer = new CloseDialogReceiver(context);
             final boolean advancedReboot = isAdvancedRebootPossible(context);
+            final Context uiContext = getUiContext(context);
 
             if (sConfirmDialog != null) {
                 sConfirmDialog.dismiss();
                 sConfirmDialog = null;
             }
-            AlertDialog.Builder confirmDialogBuilder = new AlertDialog.Builder(context)
+            AlertDialog.Builder confirmDialogBuilder = new AlertDialog.Builder(uiContext)
                     .setTitle(mRebootSafeMode
                             ? com.android.internal.R.string.reboot_safemode_title
                             : showRebootOption
@@ -562,7 +563,7 @@ public final class ShutdownThread extends Thread {
             }
         }
 
-        rebootOrShutdown(mReboot, mRebootReason);
+        rebootOrShutdown(mContext, mReboot, mRebootReason);
     }
 
     private void shutdownRadios(int timeout) {
@@ -678,18 +679,19 @@ public final class ShutdownThread extends Thread {
      * Do not call this directly. Use {@link #reboot(Context, String, boolean)}
      * or {@link #shutdown(Context, boolean)} instead.
      *
+     * @param context Context used to vibrate or null without vibration
      * @param reboot true to reboot or false to shutdown
      * @param reason reason for reboot
      */
-    public static void rebootOrShutdown(boolean reboot, String reason) {
+    public static void rebootOrShutdown(final Context context, boolean reboot, String reason) {
         deviceRebootOrShutdown(reboot, reason);
         if (reboot) {
             Log.i(TAG, "Rebooting, reason: " + reason);
             PowerManagerService.lowLevelReboot(reason);
             Log.e(TAG, "Reboot failed, will attempt shutdown instead");
-        } else if (SHUTDOWN_VIBRATE_MS > 0) {
+        } else if (SHUTDOWN_VIBRATE_MS > 0 && context != null) {
             // vibrate before shutting down
-            Vibrator vibrator = new SystemVibrator();
+            Vibrator vibrator = new SystemVibrator(context);
             try {
                 vibrator.vibrate(SHUTDOWN_VIBRATE_MS, VIBRATION_ATTRIBUTES);
             } catch (Exception e) {
@@ -784,4 +786,13 @@ public final class ShutdownThread extends Thread {
             }
         }
     };
+
+    private static Context getUiContext(Context context) {
+        Context uiContext = null;
+        if (context != null) {
+            uiContext = ThemeUtils.createUiContext(context);
+            uiContext.setTheme(android.R.style.Theme_DeviceDefault_Light_DarkActionBar);
+        }
+        return uiContext != null ? uiContext : context;
+    }
 }

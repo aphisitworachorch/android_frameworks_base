@@ -49,6 +49,7 @@ import static android.content.pm.PackageManager.INSTALL_FAILED_USER_RESTRICTED;
 import static android.content.pm.PackageManager.INSTALL_FAILED_VERSION_DOWNGRADE;
 import static android.content.pm.PackageManager.INSTALL_FORWARD_LOCK;
 import static android.content.pm.PackageManager.INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES;
+import static android.content.pm.PackageManager.INSTALL_FAILED_UNINSTALLED_PREBUNDLE;
 import static android.content.pm.PackageParser.isApkFile;
 import static android.os.Process.PACKAGE_INFO_GID;
 import static android.os.Process.SYSTEM_UID;
@@ -61,6 +62,7 @@ import static com.android.internal.content.NativeLibraryHelper.LIB_DIR_NAME;
 import static com.android.internal.util.ArrayUtils.appendInt;
 import static com.android.internal.util.ArrayUtils.removeInt;
 
+import android.app.PackageInstallObserver;
 import android.util.ArrayMap;
 
 import com.android.internal.R;
@@ -1614,6 +1616,10 @@ public class PackageManagerService extends IPackageManager.Stub {
             // avoid the resulting log spew.
             alreadyDexOpted.add(frameworkDir.getPath() + "/core-libart.jar");
 
+            // Gross hack for now: we know this file doesn't contain any
+            // code, so don't dexopt it to avoid the resulting log spew
+            alreadyDexOpted.add(frameworkDir.getPath() + "/org.cyanogenmod.platform-res.apk");
+
             /**
              * And there are a number of commands implemented in Java, which
              * we currently need to do the dexopt on so that they can be
@@ -1654,7 +1660,9 @@ public class PackageManagerService extends IPackageManager.Stub {
                 }
             }
 
-            mBootThemeConfig = ThemeUtils.getBootThemeDirty();
+            if (!mOnlyCore) {
+                mBootThemeConfig = ThemeUtils.getBootThemeDirty();
+            }
 
             // Collect vendor overlay packages.
             // (Do this before scanning any apps.)
@@ -1695,6 +1703,10 @@ public class PackageManagerService extends IPackageManager.Stub {
             final File oemAppDir = new File(Environment.getOemDirectory(), "app");
             scanDirLI(oemAppDir, PackageParser.PARSE_IS_SYSTEM
                     | PackageParser.PARSE_IS_SYSTEM_DIR, scanFlags, 0);
+
+            // Collect all prebundled packages.
+            scanDirLI(Environment.getPrebundledDirectory(),
+                    PackageParser.PARSE_IS_PREBUNDLED_DIR, scanFlags, 0);
 
             if (DEBUG_UPGRADE) Log.v(TAG, "Running installd update commands");
             mInstaller.moveFiles();
@@ -2653,6 +2665,7 @@ public class PackageManagerService extends IPackageManager.Stub {
         if (!compareStrings(pi1.nonLocalizedLabel, pi2.nonLocalizedLabel)) return false;
         // We'll take care of setting this one.
         if (!compareStrings(pi1.packageName, pi2.packageName)) return false;
+        if (pi1.allowViaWhitelist != pi2.allowViaWhitelist) return false;
         // These are not currently stored in settings.
         //if (!compareStrings(pi1.group, pi2.group)) return false;
         //if (!compareStrings(pi1.nonLocalizedDescription, pi2.nonLocalizedDescription)) return false;
@@ -4361,6 +4374,13 @@ public class PackageManagerService extends IPackageManager.Stub {
                     + " flags=0x" + Integer.toHexString(parseFlags));
         }
 
+        boolean isPrebundled = (parseFlags & PackageParser.PARSE_IS_PREBUNDLED_DIR) != 0;
+        if (isPrebundled) {
+            synchronized (mPackages) {
+                mSettings.readPrebundledPackagesLPr();
+            }
+        }
+
         for (File file : files) {
             final boolean isPackage = (isApkFile(file) || file.isDirectory())
                     && !PackageInstallerService.isStageName(file.getName());
@@ -4371,6 +4391,17 @@ public class PackageManagerService extends IPackageManager.Stub {
             try {
                 scanPackageLI(file, parseFlags | PackageParser.PARSE_MUST_BE_APK,
                         scanFlags, currentTime, null);
+                if (isPrebundled) {
+                    final PackageParser.Package pkg;
+                    try {
+                        pkg = new PackageParser().parsePackage(file, parseFlags);
+                    } catch (PackageParserException e) {
+                        throw PackageManagerException.from(e);
+                    }
+                    synchronized (mPackages) {
+                        mSettings.markPrebundledPackageInstalledLPr(pkg.packageName);
+                    }
+                }
             } catch (PackageManagerException e) {
                 Slog.w(TAG, "Failed to parse " + file + ": " + e.getMessage());
 
@@ -4383,6 +4414,12 @@ public class PackageManagerService extends IPackageManager.Stub {
                     }
                     file.delete();
                 }
+            }
+        }
+
+        if (isPrebundled) {
+            synchronized (mPackages) {
+                mSettings.writePrebundledPackagesLPr();
             }
         }
     }
@@ -4475,6 +4512,29 @@ public class PackageManagerService extends IPackageManager.Stub {
             pkg = pp.parsePackage(scanFile, parseFlags);
         } catch (PackageParserException e) {
             throw PackageManagerException.from(e);
+        }
+
+        if ((parseFlags & PackageParser.PARSE_IS_PREBUNDLED_DIR) != 0) {
+            synchronized (mPackages) {
+                PackageSetting existingSettings = mSettings.peekPackageLPr(pkg.packageName);
+                if (mSettings.wasPrebundledPackageInstalledLPr(pkg.packageName) &&
+                        existingSettings == null) {
+                    // The prebundled app was installed at some point in time, but now it is
+                    // gone.  Assume that the user uninstalled it intentionally: do not reinstall.
+                    throw new PackageManagerException(INSTALL_FAILED_UNINSTALLED_PREBUNDLE,
+                            "skip reinstall for " + pkg.packageName);
+                } else if (existingSettings != null
+                        && existingSettings.versionCode >= pkg.mVersionCode
+                        && !existingSettings.codePathString.contains(
+                                Environment.getPrebundledDirectory().getPath())) {
+                    // This app is installed in a location that is not the prebundled location
+                    // and has a higher (or same) version as the prebundled one.  Skip
+                    // installing the prebundled version.
+                    Slog.d(TAG, pkg.packageName + " already installed at " +
+                            existingSettings.codePathString);
+                    return null; // return null so we still mark package as installed
+                }
+            }
         }
 
         PackageSetting ps = null;
@@ -5998,7 +6058,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                 }
             }
 
-            setNativeLibraryPaths(pkg);
+            setNativeLibraryPaths(pkg, parseFlags);
         } else {
             // TODO: We can probably be smarter about this stuff. For installed apps,
             // we can calculate this information at install time once and for all. For
@@ -6007,7 +6067,7 @@ public class PackageManagerService extends IPackageManager.Stub {
 
             // Give ourselves some initial paths; we'll come back for another
             // pass once we've determined ABI below.
-            setNativeLibraryPaths(pkg);
+            setNativeLibraryPaths(pkg, parseFlags);
 
             final boolean isAsec = isForwardLocked(pkg) || isExternal(pkg);
             final String nativeLibraryRootStr = pkg.applicationInfo.nativeLibraryRootDir;
@@ -6145,7 +6205,7 @@ public class PackageManagerService extends IPackageManager.Stub {
 
             // Now that we've calculated the ABIs and determined if it's an internal app,
             // we will go ahead and populate the nativeLibraryPath.
-            setNativeLibraryPaths(pkg);
+            setNativeLibraryPaths(pkg, parseFlags);
 
             if (DEBUG_INSTALL) Slog.i(TAG, "Linking native library dir for " + path);
             final int[] userIds = sUserManager.getUserIds();
@@ -6562,6 +6622,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                                 bp.perm = p;
                                 bp.uid = pkg.applicationInfo.uid;
                                 bp.sourcePackage = p.info.packageName;
+                                bp.allowViaWhitelist = p.info.allowViaWhitelist;
                             } else if (!currentOwnerIsSystem) {
                                 String msg = "New decl " + p.owner + " of permission  "
                                         + p.info.name + " is system; overriding " + bp.sourcePackage;
@@ -6574,6 +6635,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                     if (bp == null) {
                         bp = new BasePermission(p.info.name, p.info.packageName,
                                 BasePermission.TYPE_NORMAL);
+                        bp.allowViaWhitelist = p.info.allowViaWhitelist;
                         permissionMap.put(p.info.name, bp);
                     }
 
@@ -6977,7 +7039,7 @@ public class PackageManagerService extends IPackageManager.Stub {
 
     private void compileResourcesWithAapt(String target, PackageParser.Package pkg)
             throws Exception {
-        String internalPath = APK_PATH_TO_OVERLAY + target;
+        String internalPath = APK_PATH_TO_OVERLAY + target + File.separator;
         String resPath = ThemeUtils.getTargetCacheDir(target, pkg);
         final int sharedGid = UserHandle.getSharedAppGid(pkg.applicationInfo.uid);
         int pkgId;
@@ -7295,7 +7357,7 @@ public class PackageManagerService extends IPackageManager.Stub {
      * Derive and set the location of native libraries for the given package,
      * which varies depending on where and how the package was installed.
      */
-    private void setNativeLibraryPaths(PackageParser.Package pkg) {
+    private void setNativeLibraryPaths(PackageParser.Package pkg, int parseFlags) {
         final ApplicationInfo info = pkg.applicationInfo;
         final String codePath = pkg.codePath;
         final File codeFile = new File(codePath);
@@ -7341,10 +7403,17 @@ public class PackageManagerService extends IPackageManager.Stub {
             info.nativeLibraryRootRequiresIsa = false;
             info.nativeLibraryDir = info.nativeLibraryRootDir;
         } else {
-            // Cluster install
-            info.nativeLibraryRootDir = new File(codeFile, LIB_DIR_NAME).getAbsolutePath();
+            if ((parseFlags & PackageParser.PARSE_IS_PREBUNDLED_DIR) != 0) {
+                // mAppLib32InstallDir is the directory /data/app-lib which is used to store native
+                // libs for apps from the system paritition.  It isn't really specific to 32bit in
+                // any way except for the variable name, the system will use the primary/secondary
+                // ABI computed below.
+                info.nativeLibraryRootDir =
+                        new File(mAppLib32InstallDir, pkg.packageName).getAbsolutePath();
+            } else {
+                info.nativeLibraryRootDir = new File(codeFile, LIB_DIR_NAME).getAbsolutePath();
+            }
             info.nativeLibraryRootRequiresIsa = true;
-
             info.nativeLibraryDir = new File(info.nativeLibraryRootDir,
                     getPrimaryInstructionSet(info)).getAbsolutePath();
 
@@ -7948,8 +8017,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                         == PackageManager.SIGNATURE_MATCH);
         if (!allowed && (bp.protectionLevel
                 & PermissionInfo.PROTECTION_FLAG_SYSTEM) != 0) {
-            boolean allowedSig = isAllowedSignature(pkg, perm);
-            if (isSystemApp(pkg) || allowedSig) {
+            if (isSystemApp(pkg)) {
                 // For updated system applications, a system permission
                 // is granted only if it had been defined by the original application.
                 if (isUpdatedSystemApp(pkg)) {
@@ -7987,7 +8055,7 @@ public class PackageManagerService extends IPackageManager.Stub {
                         }
                     }
                 } else {
-                    allowed = isPrivilegedApp(pkg) || allowedSig;
+                    allowed = isPrivilegedApp(pkg);
                 }
             }
         }
@@ -7996,6 +8064,9 @@ public class PackageManagerService extends IPackageManager.Stub {
             // For development permissions, a development permission
             // is granted only if it was already granted.
             allowed = origPermissions.contains(perm);
+        }
+        if (!allowed && bp.allowViaWhitelist) {
+            allowed = isAllowedSignature(pkg, perm);
         }
         return allowed;
     }
@@ -8017,7 +8088,8 @@ public class PackageManagerService extends IPackageManager.Stub {
                     (flags & PackageManager.MATCH_DEFAULT_ONLY) != 0, userId);
             // Remove protected Application components
             int callingUid = Binder.getCallingUid();
-            List<String> packages = Arrays.asList(getPackagesForUid(callingUid));
+            String[] pkgs = getPackagesForUid(callingUid);
+            List<String> packages = (pkgs != null) ? Arrays.asList(pkgs) : Collections.EMPTY_LIST;
             if (callingUid != Process.SYSTEM_UID &&
                     (getFlagsForUid(callingUid) & ApplicationInfo.FLAG_SYSTEM) == 0) {
                Iterator<ResolveInfo> itr = list.iterator();
@@ -14165,9 +14237,15 @@ public class PackageManagerService extends IPackageManager.Stub {
 
     @Override
     public int getInstallLocation() {
-        return android.provider.Settings.Global.getInt(mContext.getContentResolver(),
+        int mInstallLocation = android.provider.Settings.Global.getInt(
+                mContext.getContentResolver(),
                 android.provider.Settings.Global.DEFAULT_INSTALL_LOCATION,
                 PackageHelper.APP_INSTALL_AUTO);
+        if (mInstallLocation == PackageHelper.APP_INSTALL_EXTERNAL
+                && !Environment.MEDIA_MOUNTED.equals(Environment.getSecondaryStorageState())) {
+            mInstallLocation = PackageHelper.APP_INSTALL_AUTO;
+        }
+        return mInstallLocation;
     }
 
     /** Called by UserManagerService */
@@ -14552,26 +14630,26 @@ public class PackageManagerService extends IPackageManager.Stub {
                 "could not update icon mapping because caller "
                 + "does not have change config permission");
 
+        ThemeUtils.clearIconCache();
+        if (pkgName == null) {
+            clearIconMapping();
+            return;
+        }
+        mIconPackHelper = new IconPackHelper(mContext);
+        try {
+            mIconPackHelper.loadIconPack(pkgName);
+        } catch(NameNotFoundException e) {
+            Log.e(TAG, "Unable to find icon pack: " + pkgName);
+            clearIconMapping();
+            return;
+        }
+
+        for (Activity activity : mActivities.mActivities.values()) {
+            activity.info.themedIcon =
+                    mIconPackHelper.getResourceIdForActivityIcon(activity.info);
+        }
+
         synchronized (mPackages) {
-            ThemeUtils.clearIconCache();
-            if (pkgName == null) {
-                clearIconMapping();
-                return;
-            }
-            mIconPackHelper = new IconPackHelper(mContext);
-            try {
-                mIconPackHelper.loadIconPack(pkgName);
-            } catch(NameNotFoundException e) {
-                Log.e(TAG, "Unable to find icon pack: " + pkgName);
-                clearIconMapping();
-                return;
-            }
-
-            for (Activity activity : mActivities.mActivities.values()) {
-                activity.info.themedIcon =
-                        mIconPackHelper.getResourceIdForActivityIcon(activity.info);
-            }
-
             for (Package pkg : mPackages.values()) {
                 pkg.applicationInfo.themedIcon =
                         mIconPackHelper.getResourceIdForApp(pkg.packageName);

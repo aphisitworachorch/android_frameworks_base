@@ -175,6 +175,7 @@ import android.os.FactoryTest;
 import android.os.FileObserver;
 import android.os.FileUtils;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.IPermissionController;
 import android.os.IProcessInfoService;
@@ -1155,12 +1156,6 @@ public final class ActivityManagerService extends ActivityManagerNative
             = new ArrayList<ProcessChangeItem>();
 
     /**
-     * Runtime CPU use collection thread.  This object's lock is used to
-     * perform synchronization with the thread (notifying it to run).
-     */
-    final Thread mProcessCpuThread;
-
-    /**
      * Used to collect per-process CPU use for ANRs, battery stats, etc.
      * Must acquire this object's lock when accessing it.
      * NOTE: this lock will be held while doing long operations (trawling
@@ -1300,10 +1295,14 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     final ServiceThread mHandlerThread;
     final MainHandler mHandler;
+    final UiHandler mUiHandler;
+    final CpuTrackerHandler mCpuTrackerHandler;
 
-    final class MainHandler extends Handler {
-        public MainHandler(Looper looper) {
-            super(looper, null, true);
+    static KillProcessBackground mKillProcessHandler;
+
+    final class UiHandler extends Handler {
+        public UiHandler() {
+            super(com.android.server.UiThread.get().getLooper(), null, true);
         }
 
         @Override
@@ -1416,15 +1415,6 @@ public final class ActivityManagerService extends ActivityManagerNative
                 d.show();
                 ensureBootCompleted();
             } break;
-            case UPDATE_CONFIGURATION_MSG: {
-                final ContentResolver resolver = mContext.getContentResolver();
-                Settings.System.putConfiguration(resolver, (Configuration)msg.obj);
-            } break;
-            case GC_BACKGROUND_PROCESSES_MSG: {
-                synchronized (ActivityManagerService.this) {
-                    performAppGcsIfAppropriateLocked();
-                }
-            } break;
             case WAIT_FOR_DEBUGGER_MSG: {
                 synchronized (ActivityManagerService.this) {
                     ProcessRecord app = (ProcessRecord)msg.obj;
@@ -1443,6 +1433,88 @@ public final class ActivityManagerService extends ActivityManagerNative
                             app.waitDialog = null;
                         }
                     }
+                }
+            } break;
+            case SHOW_UID_ERROR_MSG: {
+                if (mShowDialogs) {
+                    AlertDialog d = new BaseErrorDialog(mContext);
+                    d.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_ERROR);
+                    d.setCancelable(false);
+                    d.setTitle(mContext.getText(R.string.android_system_label));
+                    d.setMessage(mContext.getText(R.string.system_error_wipe_data));
+                    d.setButton(DialogInterface.BUTTON_POSITIVE, mContext.getText(R.string.ok),
+                            obtainMessage(DISMISS_DIALOG_MSG, d));
+                    d.show();
+                }
+            } break;
+            case SHOW_FINGERPRINT_ERROR_MSG: {
+                if (mShowDialogs) {
+                    AlertDialog d = new BaseErrorDialog(mContext);
+                    d.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_ERROR);
+                    d.setCancelable(false);
+                    d.setTitle(mContext.getText(R.string.android_system_label));
+                    d.setMessage(mContext.getText(R.string.system_error_manufacturer));
+                    d.setButton(DialogInterface.BUTTON_POSITIVE, mContext.getText(R.string.ok),
+                            obtainMessage(DISMISS_DIALOG_MSG, d));
+                    d.show();
+                }
+            } break;
+            case SHOW_COMPAT_MODE_DIALOG_MSG: {
+                synchronized (ActivityManagerService.this) {
+                    ActivityRecord ar = (ActivityRecord) msg.obj;
+                    if (mCompatModeDialog != null) {
+                        if (mCompatModeDialog.mAppInfo.packageName.equals(
+                                ar.info.applicationInfo.packageName)) {
+                            return;
+                        }
+                        mCompatModeDialog.dismiss();
+                        mCompatModeDialog = null;
+                    }
+                    if (ar != null && false) {
+                        if (mCompatModePackages.getPackageAskCompatModeLocked(
+                                ar.packageName)) {
+                            int mode = mCompatModePackages.computeCompatModeLocked(
+                                    ar.info.applicationInfo);
+                            if (mode == ActivityManager.COMPAT_MODE_DISABLED
+                                    || mode == ActivityManager.COMPAT_MODE_ENABLED) {
+                                mCompatModeDialog = new CompatModeDialog(
+                                        ActivityManagerService.this, mContext,
+                                        ar.info.applicationInfo);
+                                mCompatModeDialog.show();
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            case START_USER_SWITCH_MSG: {
+                showUserSwitchDialog(msg.arg1, (String) msg.obj);
+                break;
+            }
+            case DISMISS_DIALOG_MSG: {
+                final Dialog d = (Dialog) msg.obj;
+                d.dismiss();
+                break;
+            }
+            }
+        }
+    }
+
+    final class MainHandler extends Handler {
+        public MainHandler(Looper looper) {
+            super(looper, null, true);
+        }
+
+        @Override
+        public void handleMessage(Message msg) {
+            switch (msg.what) {
+            case UPDATE_CONFIGURATION_MSG: {
+                final ContentResolver resolver = mContext.getContentResolver();
+                Settings.System.putConfiguration(resolver, (Configuration) msg.obj);
+            } break;
+            case GC_BACKGROUND_PROCESSES_MSG: {
+                synchronized (ActivityManagerService.this) {
+                    performAppGcsIfAppropriateLocked();
                 }
             } break;
             case SERVICE_TIMEOUT_MSG: {
@@ -1507,30 +1579,6 @@ public final class ActivityManagerService extends ActivityManagerNative
                             }
                         }
                     }
-                }
-            } break;
-            case SHOW_UID_ERROR_MSG: {
-                if (mShowDialogs) {
-                    AlertDialog d = new BaseErrorDialog(getUiContext());
-                    d.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_ERROR);
-                    d.setCancelable(false);
-                    d.setTitle(mContext.getText(R.string.android_system_label));
-                    d.setMessage(mContext.getText(R.string.system_error_wipe_data));
-                    d.setButton(DialogInterface.BUTTON_POSITIVE, mContext.getText(R.string.ok),
-                            mHandler.obtainMessage(DISMISS_DIALOG_MSG, d));
-                    d.show();
-                }
-            } break;
-            case SHOW_FINGERPRINT_ERROR_MSG: {
-                if (mShowDialogs) {
-                    AlertDialog d = new BaseErrorDialog(mContext);
-                    d.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_ERROR);
-                    d.setCancelable(false);
-                    d.setTitle(mContext.getText(R.string.android_system_label));
-                    d.setMessage(mContext.getText(R.string.system_error_manufacturer));
-                    d.setButton(DialogInterface.BUTTON_POSITIVE, mContext.getText(R.string.ok),
-                            mHandler.obtainMessage(DISMISS_DIALOG_MSG, d));
-                    d.show();
                 }
             } break;
             case PROC_START_TIMEOUT_MSG: {
@@ -1633,34 +1681,6 @@ public final class ActivityManagerService extends ActivityManagerNative
                     sendMessageDelayed(nmsg, POWER_CHECK_DELAY);
                 }
             } break;
-            case SHOW_COMPAT_MODE_DIALOG_MSG: {
-                synchronized (ActivityManagerService.this) {
-                    ActivityRecord ar = (ActivityRecord)msg.obj;
-                    if (mCompatModeDialog != null) {
-                        if (mCompatModeDialog.mAppInfo.packageName.equals(
-                                ar.info.applicationInfo.packageName)) {
-                            return;
-                        }
-                        mCompatModeDialog.dismiss();
-                        mCompatModeDialog = null;
-                    }
-                    if (ar != null && false) {
-                        if (mCompatModePackages.getPackageAskCompatModeLocked(
-                                ar.packageName)) {
-                            int mode = mCompatModePackages.computeCompatModeLocked(
-                                    ar.info.applicationInfo);
-                            if (mode == ActivityManager.COMPAT_MODE_DISABLED
-                                    || mode == ActivityManager.COMPAT_MODE_ENABLED) {
-                                mCompatModeDialog = new CompatModeDialog(
-                                        ActivityManagerService.this, mContext,
-                                        ar.info.applicationInfo);
-                                mCompatModeDialog.show();
-                            }
-                        }
-                    }
-                }
-                break;
-            }
             case DISPATCH_PROCESSES_CHANGED: {
                 dispatchProcessesChanged();
                 break;
@@ -1679,10 +1699,6 @@ public final class ActivityManagerService extends ActivityManagerNative
                     }
                 };
                 thread.start();
-                break;
-            }
-            case START_USER_SWITCH_MSG: {
-                showUserSwitchDialog(msg.arg1, (String) msg.obj);
                 break;
             }
             case REPORT_USER_SWITCH_MSG: {
@@ -1792,11 +1808,6 @@ public final class ActivityManagerService extends ActivityManagerNative
                 }
                 break;
             }
-            case DISMISS_DIALOG_MSG: {
-                final Dialog d = (Dialog) msg.obj;
-                d.dismiss();
-                break;
-            }
             case NOTIFY_TASK_STACK_CHANGE_LISTENERS_MSG: {
                 synchronized (ActivityManagerService.this) {
                     int i = mTaskStackListeners.beginBroadcast();
@@ -1880,7 +1891,64 @@ public final class ActivityManagerService extends ActivityManagerNative
         }
     };
 
+    static final int SCHEDULE_CPU_STATS_MSG = 1;
+    static final int UPDATE_CPU_STATS_MSG = 2;
+
+    final class KillProcessBackground extends Handler {
+        public KillProcessBackground(Looper looper) {
+            super(looper);
+        }
+
+        @Override
+        public void handleMessage(Message msg) {
+            switch (msg.what) {
+            case KILL_PROCESS_GROUP_MSG:
+                killProcessGroupBackground(msg.arg1, msg.arg2);
+            break;
+            }
+        }
+    };
+
+    final class CpuTrackerHandler extends Handler {
+        public CpuTrackerHandler(Looper looper) {
+            super(looper);
+        }
+
+        @Override
+        public void handleMessage(Message msg) {
+            switch (msg.what) {
+            case SCHEDULE_CPU_STATS_MSG: {
+                final long now = SystemClock.uptimeMillis();
+                long nextCpuDelay = (mLastCpuTime.get() + MONITOR_CPU_MAX_TIME) - now;
+                long nextWriteDelay = (mLastWriteTime + BATTERY_STATS_TIME) - now;
+                //Slog.i(TAG, "Cpu delay=" + nextCpuDelay + ", write delay=" + nextWriteDelay);
+                if (nextWriteDelay < nextCpuDelay) {
+                    nextCpuDelay = nextWriteDelay;
+                }
+                if (nextCpuDelay > 0) {
+                    mProcessCpuMutexFree.set(true);
+                    sendEmptyMessageDelayed(UPDATE_CPU_STATS_MSG, nextCpuDelay);
+                }
+            } break;
+            case UPDATE_CPU_STATS_MSG: {
+                updateCpuStatsNow();
+                schedule();
+            } break;
+            }
+        }
+
+        void schedule() {
+            sendEmptyMessage(SCHEDULE_CPU_STATS_MSG);
+        }
+
+        void updateNow() {
+            removeMessages(UPDATE_CPU_STATS_MSG);
+            sendEmptyMessage(UPDATE_CPU_STATS_MSG);
+        }
+    };
+
     static final int COLLECT_PSS_BG_MSG = 1;
+    static final int KILL_PROCESS_GROUP_MSG = 44;
 
     final Handler mBgHandler = new Handler(BackgroundThread.getHandler().getLooper()) {
         @Override
@@ -2137,6 +2205,12 @@ public final class ActivityManagerService extends ActivityManagerNative
                 android.os.Process.THREAD_PRIORITY_FOREGROUND, false /*allowIo*/);
         mHandlerThread.start();
         mHandler = new MainHandler(mHandlerThread.getLooper());
+        mUiHandler = new UiHandler();
+        HandlerThread cpuTrackerThread = new HandlerThread("CpuTracker");
+        cpuTrackerThread.start();
+        mCpuTrackerHandler = new CpuTrackerHandler(cpuTrackerThread.getLooper());
+
+        mKillProcessHandler = new KillProcessBackground(BackgroundThread.getHandler().getLooper());
 
         mFgBroadcastQueue = new BroadcastQueue(this, mHandler,
                 "foreground", BROADCAST_FG_TIMEOUT, false);
@@ -2152,7 +2226,7 @@ public final class ActivityManagerService extends ActivityManagerNative
         File dataDir = Environment.getDataDirectory();
         File systemDir = new File(dataDir, "system");
         systemDir.mkdirs();
-        mBatteryStatsService = new BatteryStatsService(systemDir, mHandler);
+        mBatteryStatsService = new BatteryStatsService(systemDir, mCpuTrackerHandler);
         mBatteryStatsService.getActiveStatistics().readLocked();
         mBatteryStatsService.getActiveStatistics().writeAsyncLocked();
         mOnBattery = DEBUG_POWER ? true
@@ -2186,36 +2260,6 @@ public final class ActivityManagerService extends ActivityManagerNative
         mStackSupervisor = new ActivityStackSupervisor(this);
         mTaskPersister = new TaskPersister(systemDir, mStackSupervisor);
 
-        mProcessCpuThread = new Thread("CpuTracker") {
-            @Override
-            public void run() {
-                while (true) {
-                    try {
-                        try {
-                            synchronized(this) {
-                                final long now = SystemClock.uptimeMillis();
-                                long nextCpuDelay = (mLastCpuTime.get()+MONITOR_CPU_MAX_TIME)-now;
-                                long nextWriteDelay = (mLastWriteTime+BATTERY_STATS_TIME)-now;
-                                //Slog.i(TAG, "Cpu delay=" + nextCpuDelay
-                                //        + ", write delay=" + nextWriteDelay);
-                                if (nextWriteDelay < nextCpuDelay) {
-                                    nextCpuDelay = nextWriteDelay;
-                                }
-                                if (nextCpuDelay > 0) {
-                                    mProcessCpuMutexFree.set(true);
-                                    this.wait(nextCpuDelay);
-                                }
-                            }
-                        } catch (InterruptedException e) {
-                        }
-                        updateCpuStatsNow();
-                    } catch (Exception e) {
-                        Slog.e(TAG, "Unexpected exception collecting process stats", e);
-                    }
-                }
-            }
-        };
-
         Watchdog.getInstance().addMonitor(this);
         Watchdog.getInstance().addThread(mHandler);
     }
@@ -2230,7 +2274,7 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     private void start() {
         Process.removeAllProcessGroups();
-        mProcessCpuThread.start();
+        mCpuTrackerHandler.schedule();
 
         mBatteryStatsService.publish(mContext);
         mAppOpsService.publish(mContext);
@@ -2291,9 +2335,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             return;
         }
         if (mProcessCpuMutexFree.compareAndSet(true, false)) {
-            synchronized (mProcessCpuThread) {
-                mProcessCpuThread.notify();
-            }
+            mCpuTrackerHandler.updateNow();
         }
     }
 
@@ -2511,7 +2553,7 @@ public final class ActivityManagerService extends ActivityManagerNative
         Message msg = Message.obtain();
         msg.what = SHOW_COMPAT_MODE_DIALOG_MSG;
         msg.obj = r.task.askedCompatMode ? null : r;
-        mHandler.sendMessage(msg);
+        mUiHandler.sendMessage(msg);
     }
 
     private int updateLruProcessInternalLocked(ProcessRecord app, long now, int index,
@@ -2557,7 +2599,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             if (!app.killed) {
                 Slog.wtfStack(TAG, "Removing process that hasn't been killed: " + app);
                 Process.killProcessQuiet(app.pid);
-                Process.killProcessGroup(app.info.uid, app.pid);
+                killProcessGroup(app.info.uid, app.pid);
             }
             if (lrui <= mLruProcessActivityStart) {
                 mLruProcessActivityStart--;
@@ -2919,7 +2961,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             // clean it up now.
             if (DEBUG_PROCESSES || DEBUG_CLEANUP) Slog.v(TAG, "App died: " + app);
             checkTime(startTime, "startProcess: bad proc running, killing");
-            Process.killProcessGroup(app.info.uid, app.pid);
+            killProcessGroup(app.info.uid, app.pid);
             handleAppDiedLocked(app, true, true);
             checkTime(startTime, "startProcess: done killing old proc");
         }
@@ -4793,7 +4835,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             if (!fromBinderDied) {
                 Process.killProcessQuiet(pid);
             }
-            Process.killProcessGroup(app.info.uid, pid);
+            killProcessGroup(app.info.uid, pid);
             app.killed = true;
         }
 
@@ -5197,20 +5239,20 @@ public final class ActivityManagerService extends ActivityManagerNative
                 map.put("activity", activity);
             }
 
-            mHandler.sendMessage(msg);
+            mUiHandler.sendMessage(msg);
         }
     }
 
     final void showLaunchWarningLocked(final ActivityRecord cur, final ActivityRecord next) {
         if (!mLaunchWarningShown) {
             mLaunchWarningShown = true;
-            mHandler.post(new Runnable() {
+            mUiHandler.post(new Runnable() {
                 @Override
                 public void run() {
                     synchronized (ActivityManagerService.this) {
                         final Dialog d = new LaunchWarningWindow(getUiContext(), cur, next);
                         d.show();
-                        mHandler.postDelayed(new Runnable() {
+                        mUiHandler.postDelayed(new Runnable() {
                             @Override
                             public void run() {
                                 synchronized (ActivityManagerService.this) {
@@ -8172,7 +8214,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             msg.what = WAIT_FOR_DEBUGGER_MSG;
             msg.obj = app;
             msg.arg1 = waiting ? 1 : 0;
-            mHandler.sendMessage(msg);
+            mUiHandler.sendMessage(msg);
         }
     }
 
@@ -10531,6 +10573,7 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     public void requestBugReport() {
         enforceCallingPermission(android.Manifest.permission.DUMP, "requestBugReport");
+        mContext.sendBroadcast(new Intent("android.intent.action.BUGREPORT_STARTED"));
         SystemProperties.set("ctl.start", "bugreport");
     }
 
@@ -11480,7 +11523,7 @@ public final class ActivityManagerService extends ActivityManagerNative
                     Message msg = Message.obtain();
                     msg.what = SHOW_FACTORY_ERROR_MSG;
                     msg.getData().putCharSequence("msg", errorMsg);
-                    mHandler.sendMessage(msg);
+                    mUiHandler.sendMessage(msg);
                 }
             }
         }
@@ -11539,14 +11582,14 @@ public final class ActivityManagerService extends ActivityManagerNative
                 if (AppGlobals.getPackageManager().hasSystemUidErrors()) {
                     Slog.e(TAG, "UIDs on the system are inconsistent, you need to wipe your"
                             + " data partition or your device will be unstable.");
-                    mHandler.obtainMessage(SHOW_UID_ERROR_MSG).sendToTarget();
+                    mUiHandler.obtainMessage(SHOW_UID_ERROR_MSG).sendToTarget();
                 }
             } catch (RemoteException e) {
             }
 
             if (!Build.isFingerprintConsistent()) {
                 Slog.e(TAG, "Build fingerprint is not consistent, warning user");
-                mHandler.obtainMessage(SHOW_FINGERPRINT_ERROR_MSG).sendToTarget();
+                mUiHandler.obtainMessage(SHOW_FINGERPRINT_ERROR_MSG).sendToTarget();
             }
 
             long ident = Binder.clearCallingIdentity();
@@ -11878,7 +11921,7 @@ public final class ActivityManagerService extends ActivityManagerNative
                 data.put("violationMask", violationMask);
                 data.put("info", info);
                 msg.obj = data;
-                mHandler.sendMessage(msg);
+                mUiHandler.sendMessage(msg);
 
                 Binder.restoreCallingIdentity(origId);
             }
@@ -12284,7 +12327,7 @@ public final class ActivityManagerService extends ActivityManagerNative
                             } else {
                                 // Huh.
                                 Process.killProcess(pid);
-                                Process.killProcessGroup(uid, pid);
+                                killProcessGroup(uid, pid);
                             }
                         }
                         return;
@@ -12329,7 +12372,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             data.put("result", result);
             data.put("app", r);
             msg.obj = data;
-            mHandler.sendMessage(msg);
+            mUiHandler.sendMessage(msg);
 
             Binder.restoreCallingIdentity(origId);
         }
@@ -15045,7 +15088,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             }
         }
 
-        for (int i=0; i<cpr.connections.size(); i++) {
+        for (int i = cpr.connections.size() - 1; i >= 0; i--) {
             ContentProviderConnection conn = cpr.connections.get(i);
             if (conn.waiting) {
                 // If this connection is waiting for the provider, then we don't
@@ -15137,10 +15180,11 @@ public final class ActivityManagerService extends ActivityManagerNative
         boolean restart = false;
 
         // Remove published content providers.
-        for (int i=app.pubProviders.size()-1; i>=0; i--) {
+        for (int i = app.pubProviders.size() - 1; i >= 0; i--) {
             ContentProviderRecord cpr = app.pubProviders.valueAt(i);
             final boolean always = app.bad || !allowRestart;
-            if (removeDyingProviderLocked(app, cpr, always) || always) {
+            boolean inLaunching = removeDyingProviderLocked(app, cpr, always);
+            if ((inLaunching || always) && cpr.hasConnectionOrHandle()) {
                 // We left the provider in the launching list, need to
                 // restart it.
                 restart = true;
@@ -15158,7 +15202,7 @@ public final class ActivityManagerService extends ActivityManagerNative
 
         // Unregister from connected content providers.
         if (!app.conProviders.isEmpty()) {
-            for (int i=0; i<app.conProviders.size(); i++) {
+            for (int i = app.conProviders.size() - 1; i >= 0; i--) {
                 ContentProviderConnection conn = app.conProviders.get(i);
                 conn.provider.connections.remove(conn);
                 stopAssociationLocked(app.uid, app.processName, conn.provider.uid,
@@ -15173,9 +15217,8 @@ public final class ActivityManagerService extends ActivityManagerNative
         // XXX Commented out for now.  Trying to figure out a way to reproduce
         // the actual situation to identify what is actually going on.
         if (false) {
-            for (int i=0; i<mLaunchingProviders.size(); i++) {
-                ContentProviderRecord cpr = (ContentProviderRecord)
-                        mLaunchingProviders.get(i);
+            for (int i = mLaunchingProviders.size() - 1; i >= 0; i--) {
+                ContentProviderRecord cpr = mLaunchingProviders.get(i);
                 if (cpr.connections.size() <= 0 && !cpr.hasExternalProcessHandles()) {
                     synchronized (cpr) {
                         cpr.launchingApp = null;
@@ -15188,7 +15231,7 @@ public final class ActivityManagerService extends ActivityManagerNative
         skipCurrentReceiverLocked(app);
 
         // Unregister any receivers.
-        for (int i=app.receivers.size()-1; i>=0; i--) {
+        for (int i = app.receivers.size() - 1; i >= 0; i--) {
             removeReceiverLocked(app.receivers.valueAt(i));
         }
         app.receivers.clear();
@@ -15206,7 +15249,7 @@ public final class ActivityManagerService extends ActivityManagerNative
             }
         }
 
-        for (int i = mPendingProcessChanges.size()-1; i>=0; i--) {
+        for (int i = mPendingProcessChanges.size() - 1; i >= 0; i--) {
             ProcessChangeItem item = mPendingProcessChanges.get(i);
             if (item.pid == app.pid) {
                 mPendingProcessChanges.remove(i);
@@ -15281,18 +15324,14 @@ public final class ActivityManagerService extends ActivityManagerNative
         // and if any run in this process then either schedule a restart of
         // the process or kill the client waiting for it if this process has
         // gone bad.
-        int NL = mLaunchingProviders.size();
         boolean restart = false;
-        for (int i=0; i<NL; i++) {
+        for (int i = mLaunchingProviders.size() - 1; i >= 0; i--) {
             ContentProviderRecord cpr = mLaunchingProviders.get(i);
             if (cpr.launchingApp == app) {
-                if (!alwaysBad && !app.bad) {
+                if (!alwaysBad && !app.bad && cpr.hasConnectionOrHandle()) {
                     restart = true;
                 } else {
                     removeDyingProviderLocked(app, cpr, true);
-                    // cpr should have been removed from mLaunchingProviders
-                    NL = mLaunchingProviders.size();
-                    i--;
                 }
             }
         }
@@ -15863,8 +15902,9 @@ public final class ActivityManagerService extends ActivityManagerNative
         }
 
         synchronized (this) {
-            if (callerApp != null && callerApp.pid == 0) {
-                // Caller already died
+            if (callerApp != null && (callerApp.thread == null
+                    || callerApp.thread.asBinder() != caller.asBinder())) {
+                // Original caller already died
                 return null;
             }
             ReceiverList rl
@@ -17183,6 +17223,24 @@ public final class ActivityManagerService extends ActivityManagerNative
         if (ass.mNesting == 0) {
             ass.mTime += SystemClock.uptimeMillis() - ass.mStartTime;
         }
+    }
+
+    static final boolean DEBUG_KILL_ASYNC = true;
+    static public void killProcessGroup(final int uid , final int pid) {
+        if (mKillProcessHandler == null) {
+            Slog.w(TAG, "thread for killProcessGroup is not ready");
+            Process.killProcessGroup(uid, pid);
+            return;
+        }
+        mKillProcessHandler.sendMessage(mKillProcessHandler.obtainMessage(KILL_PROCESS_GROUP_MSG, uid, pid));
+    }
+
+    private void killProcessGroupBackground(int uid , int pid) {
+        long now = SystemClock.uptimeMillis();
+        Process.killProcessGroup(uid, pid);
+        if (DEBUG_KILL_ASYNC) Slog.v(TAG, "killProcessGroupAsync took "
+            + (SystemClock.uptimeMillis() - now) + " ms for PID " + pid
+            + " on thread " + Thread.currentThread().getId());
     }
 
     private final int computeOomAdjLocked(ProcessRecord app, int cachedAdj, ProcessRecord TOP_APP,
@@ -19163,8 +19221,8 @@ public final class ActivityManagerService extends ActivityManagerNative
             userName = userInfo.name;
             mTargetUserId = userId;
         }
-        mHandler.removeMessages(START_USER_SWITCH_MSG);
-        mHandler.sendMessage(mHandler.obtainMessage(START_USER_SWITCH_MSG, userId, 0, userName));
+        mUiHandler.removeMessages(START_USER_SWITCH_MSG);
+        mUiHandler.sendMessage(mUiHandler.obtainMessage(START_USER_SWITCH_MSG, userId, 0, userName));
         return true;
     }
 

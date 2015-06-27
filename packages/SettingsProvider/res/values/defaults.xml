@@ -235,7 +235,7 @@
     <bool name="def_cm_stats_collection">false</bool>
 
     <!-- Default for Settings.System.STATUS_BAR_BATTERY_STYLE -->
-    <integer name="def_battery_style">0</integer>
+    <integer name="def_battery_style">2</integer>
 
     <!-- Default theme -->
     <string name="def_theme_package"></string>
@@ -258,4 +258,7 @@
          1. Right
          2. Left -->
     <integer name="def_qs_quick_pulldown">0</integer>
+
+    <!-- Defaults for Settings.Secure.SPELL_CHECKER_ENABLED. -->
+    <bool name="def_spell_checker">true</bool>
 </resources>

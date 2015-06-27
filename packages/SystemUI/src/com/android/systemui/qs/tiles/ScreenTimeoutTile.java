@@ -33,6 +33,7 @@ import android.widget.ListView;
 import com.android.systemui.R;
 import com.android.systemui.qs.QSDetailItemsList;
 import com.android.systemui.qs.QSTile;
+import cyanogenmod.app.StatusBarPanelCustomTile;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -95,7 +96,7 @@ public class ScreenTimeoutTile extends QSTile<ScreenTimeoutTile.TimeoutState> {
 
     @Override
     public DetailAdapter getDetailAdapter() {
-        return new LocationDetailAdapter();
+        return new ScreenTimeoutDetailAdapter();
     }
 
     private ContentObserver mObserver = new ContentObserver(mHandler) {
@@ -237,7 +238,15 @@ public class ScreenTimeoutTile extends QSTile<ScreenTimeoutTile.TimeoutState> {
 
         state.visible = true;
         state.label = makeTimeoutSummaryString(newTimeout);
+        state.contentDescription = mContext.getString(
+                R.string.accessibility_quick_settings_screen_timeout, state.label);
         state.previousTimeout = newTimeout;
+    }
+
+    @Override
+    protected String composeChangeAnnouncement() {
+        return mContext.getString(R.string.accessibility_quick_settings_screen_timeout_changed,
+                mState.label);
     }
 
     private class RadioAdapter extends ArrayAdapter<String> {
@@ -262,7 +271,8 @@ public class ScreenTimeoutTile extends QSTile<ScreenTimeoutTile.TimeoutState> {
         }
 
     }
-    private class LocationDetailAdapter implements DetailAdapter, AdapterView.OnItemClickListener {
+    private class ScreenTimeoutDetailAdapter implements DetailAdapter,
+            AdapterView.OnItemClickListener {
         private QSDetailItemsList mItems;
 
         @Override
@@ -278,6 +288,11 @@ public class ScreenTimeoutTile extends QSTile<ScreenTimeoutTile.TimeoutState> {
         @Override
         public Intent getSettingsIntent() {
             return SETTINGS_INTENT;
+        }
+
+        @Override
+        public StatusBarPanelCustomTile getCustomTile() {
+            return null;
         }
 
         @Override

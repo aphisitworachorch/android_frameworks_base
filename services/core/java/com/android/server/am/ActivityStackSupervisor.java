@@ -2732,14 +2732,10 @@ public final class ActivityStackSupervisor implements DisplayListener {
                 }
                 final ActivityRecord ar = stack.findTaskLocked(r);
                 if (ar != null) {
-                    BinderInternal.modifyDelayedGcParams();
                     return ar;
                 }
             }
         }
-        /* Delay Binder Explicit GC during application launch */
-        BinderInternal.modifyDelayedGcParams();
-
         mPm.cpuBoost(2000 * 1000);
 
         /* Delay Binder Explicit GC during application launch */

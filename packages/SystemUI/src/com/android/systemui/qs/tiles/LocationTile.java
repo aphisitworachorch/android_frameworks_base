@@ -34,6 +34,7 @@ import com.android.systemui.qs.QSTile;
 import com.android.systemui.statusbar.policy.KeyguardMonitor;
 import com.android.systemui.statusbar.policy.LocationController;
 import com.android.systemui.statusbar.policy.LocationController.LocationSettingsChangeCallback;
+import cyanogenmod.app.StatusBarPanelCustomTile;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -113,7 +114,6 @@ public class LocationTile extends QSTile<QSTile.BooleanState> {
         // bug is fixed, this should be reverted to only hiding it on secure lock screens:
         // state.visible = !(mKeyguard.isSecure() && mKeyguard.isShowing());
         state.visible = !mKeyguard.isShowing();
-        state.value = locationEnabled;
         state.label = mContext.getString(getStateLabelRes(currentState));
 
         switch (currentState) {
@@ -161,10 +161,22 @@ public class LocationTile extends QSTile<QSTile.BooleanState> {
 
     @Override
     protected String composeChangeAnnouncement() {
-        if (mState.value) {
-            return mContext.getString(R.string.accessibility_quick_settings_location_changed_on);
-        } else {
-            return mContext.getString(R.string.accessibility_quick_settings_location_changed_off);
+        switch (mController.getLocationCurrentState()) {
+            case Settings.Secure.LOCATION_MODE_OFF:
+                return mContext.getString(
+                        R.string.accessibility_quick_settings_location_changed_off);
+            case Settings.Secure.LOCATION_MODE_BATTERY_SAVING:
+                return mContext.getString(
+                        R.string.accessibility_quick_settings_location_changed_battery_saving);
+            case Settings.Secure.LOCATION_MODE_SENSORS_ONLY:
+                return mContext.getString(
+                        R.string.accessibility_quick_settings_location_changed_gps_only);
+            case Settings.Secure.LOCATION_MODE_HIGH_ACCURACY:
+                return mContext.getString(
+                        R.string.accessibility_quick_settings_location_changed_high_accuracy);
+            default:
+                return mContext.getString(
+                        R.string.accessibility_quick_settings_location_changed_on);
         }
     }
 
@@ -217,6 +229,11 @@ public class LocationTile extends QSTile<QSTile.BooleanState> {
         @Override
         public Intent getSettingsIntent() {
             return LOCATION_SETTINGS_INTENT;
+        }
+
+        @Override
+        public StatusBarPanelCustomTile getCustomTile() {
+            return null;
         }
 
         @Override

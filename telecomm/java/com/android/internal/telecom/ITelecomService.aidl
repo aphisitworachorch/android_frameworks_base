@@ -131,6 +131,11 @@ interface ITelecomService {
     boolean hasVoiceMailNumber(in PhoneAccountHandle accountHandle);
 
     /**
+     * @see TelecomServiceImpl#getVoiceMailNumber
+     */
+    String getVoiceMailNumber(in PhoneAccountHandle accountHandle);
+
+    /**
      * @see TelecomServiceImpl#getDefaultPhoneApp
      */
     ComponentName getDefaultPhoneApp();
@@ -212,10 +217,10 @@ interface ITelecomService {
     /**
      * @see TelecommManager#getActiveSubscription
      */
-    long getActiveSubscription();
+    int getActiveSubscription();
 
     /**
      * @see TelecommManager#switchToOtherActiveSub
      */
-    void switchToOtherActiveSub(long subId);
+    void switchToOtherActiveSub(int subId);
 }

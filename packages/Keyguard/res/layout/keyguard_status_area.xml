@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout android:gravity="center" android:orientation="vertical" android:layout_width="fill_parent" android:layout_height="wrap_content"
   xmlns:android="http://schemas.android.com/apk/res/android" xmlns:androidprv="http://schemas.android.com/apk/res-auto">
-    <LinearLayout android:layout_gravity="center_horizontal" android:orientation="vertical" android:id="@id/clock" android:layout_width="wrap_content" android:layout_height="wrap_content">
-        <TextClock android:textColor="@color/clock_white" android:gravity="center" android:layout_gravity="center_horizontal" android:id="@id/clock" android:layout_width="wrap_content" android:layout_height="wrap_content" android:format12Hour="a - EEE, LLL d" android:format24Hour="EEE, LLL d" style="@style/new_style" />
+    <LinearLayout android:layout_gravity="center_horizontal" android:orientation="vertical" android:id="@+id/clock" android:layout_width="wrap_content" android:layout_height="wrap_content">
+        <TextClock android:textColor="@color/clock_white" android:gravity="center" android:layout_gravity="center_horizontal" android:id="@+id/clock" android:layout_width="wrap_content" android:layout_height="wrap_content" android:format12Hour="a - EEE, LLL d" android:format24Hour="EEE, LLL d" style="@style/new_style" />
     </LinearLayout>
-    <TextClock android:textColor="@color/clock_white" android:gravity="center" android:id="@id/date_view" android:layout_width="0.0dip" android:layout_height="0.0dip" android:layout_below="@id/clock" style="@style/widget_label" />
-    <TextView android:textColor="@color/clock_gray" android:gravity="center" android:id="@id/alarm_status" android:visibility="gone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:drawablePadding="6.0dip" android:layout_below="@id/clock" android:drawableStart="@drawable/ic_access_alarms_big" style="@style/new_style" />
+    <TextClock android:textColor="@color/clock_white" android:gravity="center" android:id="@+id/date_view" android:layout_width="0.0dip" android:layout_height="0.0dip" android:layout_below="@id/clock" style="@style/widget_label" />
+    <TextView android:textColor="@color/clock_gray" android:gravity="center" android:id="@+id/alarm_status" android:visibility="gone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:drawablePadding="6.0dip" android:layout_below="@id/clock" android:drawableStart="@drawable/ic_access_alarms_big" style="@style/new_style" />
 </LinearLayout>
